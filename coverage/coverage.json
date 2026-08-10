@@ -1,0 +1,25 @@
+{
+  "branches": {
+    "coverage": "-",
+    "missed": 0,
+    "total": 0
+  },
+  "functions": {
+    "coverage": "72.51%",
+    "missed": 1370,
+    "total": 4983
+  },
+  "generated_at": "2026-08-10T04:11:47Z",
+  "lines": {
+    "coverage": "77.00%",
+    "missed": 9456,
+    "total": 41108
+  },
+  "package": "workspace",
+  "regions": {
+    "coverage": "76.14%",
+    "missed": 13766,
+    "total": 57705
+  },
+  "run_url": "https://github.com/yeah586/AgentENV/actions/runs/31353802076"
+}
