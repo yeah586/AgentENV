@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3ec94f5d.js";
+            window.path_to_searchindex_js = "searchindex-d5f5dfb2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a02e686b.js"></script>
@@ -386,6 +386,21 @@ default.</p>
 <h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
 <pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/kvcache-ai/AgentENV/main/scripts/install-cli.sh | bash
 </code></pre>
+<p>Each release publishes <code>aenv-&lt;os&gt;-&lt;arch&gt;.tar.gz</code> for Linux and macOS on x86_64
+and aarch64 (arm64). The archive contains:</p>
+<pre><code class="language-text">aenv
+aenv-buildctl
+manifest.json
+</code></pre>
+<p>The manifest records the AgentENV version, BuildKit version, and platform.
+<code>SHA256SUMS</code> accompanies the release archives. The release workflow verifies the
+pinned upstream BuildKit download before packaging its client with <code>aenv</code>.</p>
+<p>Both <code>install-cli.sh</code> and the full <code>install.sh</code> download this single CLI archive
+and verify its GitHub release asset checksum before installing both executables.
+Installation does not contact the upstream BuildKit release. The private
+<code>aenv-buildctl</code> lives beside <code>aenv</code>, preserving an existing system <code>buildctl</code>.
+Set <code>INSTALL_DIR</code> for a user-local CLI installation. For manual installation,
+extract the archive and keep both executables in the same directory.</p>
 <p>Or build from source (requires Rust):</p>
 <pre><code class="language-bash">git clone https://github.com/kvcache-ai/AgentENV.git
 cd AgentENV
@@ -423,10 +438,13 @@ aenv pull ubuntu:22.04 --name my-ubuntu
 </tbody>
 </table>
 </div>
-<h3 id="aenv-build-dockerfile---name-name"><a class="header" href="#aenv-build-dockerfile---name-name"><code>aenv build &lt;dockerfile&gt; --name &lt;name&gt;</code></a></h3>
-<p>Create a template from a local Dockerfile.</p>
-<pre><code class="language-bash">aenv build ./Dockerfile --name my-app
-aenv build ./Dockerfile --name my-app --image ghcr.io/myorg/base:latest
+<h3 id="aenv-build-context---name-name"><a class="header" href="#aenv-build-context---name-name"><code>aenv build &lt;context&gt; --name &lt;name&gt;</code></a></h3>
+<p>Create a template from a local Dockerfile using BuildKit in an isolated microVM.
+The installers include the required <code>buildctl</code> executable. For source builds,
+install BuildKit’s <code>buildctl</code> v0.33.0 or select an existing executable with <code>--buildctl</code>.</p>
+<pre><code class="language-bash">aenv build . --name my-app
+aenv build . -f deploy/docker/Dockerfile.agentenv --name aenv
+aenv build ./my-app --name my-app-v2 --build-arg VERSION=2
 </code></pre>
 <div class="table-wrapper">
 <table>
@@ -437,12 +455,29 @@ aenv build ./Dockerfile --name my-app --image ghcr.io/myorg/base:latest
 <tr><td><code>--name &lt;name&gt;</code></td><td>Required template name</td></tr>
 <tr><td><code>--cpu &lt;count&gt;</code></td><td>CPU cores for the template. Defaults to <code>[machine].vcpu_count</code> on the server. Alias: <code>--cpu-count</code>.</td></tr>
 <tr><td><code>--memory &lt;MiB&gt;</code></td><td>Memory for the template. Defaults to <code>[machine].mem_size_mib</code> on the server. Aliases: <code>--memory-mb</code>, <code>--mem</code>.</td></tr>
-<tr><td><code>--image &lt;image&gt;</code></td><td>Override the rootfs base. Defaults to the first concrete <code>FROM</code> image, then the server’s <code>[image.resolver].default_image</code> if none is usable. Alias: <code>--user-image</code>.</td></tr>
+<tr><td><code>-f, --file &lt;path&gt;</code></td><td>Dockerfile path relative to the current directory. Defaults to <code>&lt;context&gt;/Dockerfile</code>.</td></tr>
+<tr><td><code>--build-arg KEY=VALUE</code></td><td>Repeatable build arguments.</td></tr>
+<tr><td><code>--secret &lt;spec&gt;</code></td><td>Repeatable BuildKit secret mount.</td></tr>
+<tr><td><code>--no-cache</code></td><td>Disable instruction cache for this build.</td></tr>
+<tr><td><code>--timeout &lt;seconds&gt;</code></td><td>Dockerfile build deadline; defaults to 3600. The CLI allows 10 additional minutes for provisioning and publication.</td></tr>
 </tbody>
 </table>
 </div>
-<p><code>aenv build</code> submits the build and returns immediately. Use
-<code>aenv template watch &lt;template&gt;</code> to wait for completion.</p>
+<p>The command supports multi-stage builds, file updates, and <code>.dockerignore</code>, shows
+BuildKit progress, and waits until the template is ready. The server manages the
+internal worker and releases it afterward. The first Dockerfile build prepares a
+reusable builder template. Each build clones a shared cache seed, allowing
+concurrent builds and cache reuse across template names and nodes. Builder image and sizing
+are configured in <code>[template_build]</code> on the server, with defaults of 16 vCPUs,
+32 GiB memory, and 64 GiB cache disk. <code>FROM</code>, <code>ENTRYPOINT</code>, <code>CMD</code>, and
+<code>HEALTHCHECK</code> in the final image determine the template’s image, startup, and
+readiness. The final Dockerfile stage is always published.
+See <a href="#aenv-build">templates</a> for the
+complete workflow, cache management, and startup behavior.</p>
+<p>Interactive builds show a three-stage bar for builder preparation, image build,
+and template publication, with elapsed time and Dockerfile logs above the bar.
+<code>--progress plain</code> keeps plain logs; <code>--progress tty</code> selects BuildKit’s native
+terminal display. Redirected output has no progress-bar control sequences.</p>
 <h3 id="aenv-template-list"><a class="header" href="#aenv-template-list"><code>aenv template list</code></a></h3>
 <p>List all templates. Alias: <code>aenv template ls</code>, <code>aenv templates list</code>.</p>
 <pre><code class="language-bash">aenv template list
@@ -820,6 +855,14 @@ make deploy-up
 <p><code>make deploy-up</code> builds the runtime, gateway, and scheduler images with Docker Compose
 before starting the stack. The Rust and Go toolchains are installed in the image
 build stages, so they are not required on the host.</p>
+<p>Runtime nodes mount the host’s upstream DNS configuration read-only for guest
+networks, including template builders. The <code>make deploy-*</code> targets select
+<code>/run/systemd/resolve/resolv.conf</code> when available, otherwise <code>/etc/resolv.conf</code>.
+Override <code>HOST_RESOLV_CONF</code> with an absolute path to a resolver file containing
+DNS servers reachable from guests; loopback addresses such as <code>127.0.0.53</code> and
+Docker’s <code>127.0.0.11</code> cannot be used by guests. Direct <code>docker compose</code> commands
+default to <code>/run/systemd/resolve/resolv.conf</code>; set <code>HOST_RESOLV_CONF</code> explicitly
+on hosts without that file. Containers retain Docker DNS for service discovery.</p>
 <p>To build without starting, run <code>make deploy-build</code>. To start images that are
 already built, run <code>make deploy-up-no-build</code>:</p>
 <pre><code class="language-bash"># Build only
@@ -1919,11 +1962,15 @@ be used anywhere a template ID is accepted.</p>
 </div>
 <p><code>Env</code>, <code>WorkingDir</code>, and <code>User</code> are automatically inherited from the OCI image config. See <a href="#runtime-configuration">Runtime Configuration</a> for the full field list.</p>
 <h3 id="aenv-build"><a class="header" href="#aenv-build">aenv build</a></h3>
-<blockquote>
-<p>⚠️ <strong>Experimental</strong> — Not recommended for production use.</p>
-</blockquote>
-<p>Build a template by running Dockerfile instructions inside a temporary sandbox:</p>
-<pre><code class="language-bash">aenv build &lt;dockerfile&gt; --name &lt;name&gt; [options]
+<p>Build a Dockerfile with BuildKit inside a temporary microVM, then convert the
+result to OverlayBD and capture a template. The CLI and full AgentENV installers
+include a private <code>aenv-buildctl</code> client. Source builds can use <code>--buildctl</code> to select a compatible
+client. Docker and a staging registry are not required on the CLI machine.
+On Linux and macOS, the local <code>buildctl</code> connection uses a Unix socket in a
+directory accessible only to the current user.</p>
+<pre><code class="language-bash">aenv build &lt;context&gt; --name &lt;name&gt; [options]
+# From the repository root:
+aenv build . -f deploy/docker/Dockerfile.agentenv --name aenv
 </code></pre>
 <div class="table-wrapper">
 <table>
@@ -1931,39 +1978,162 @@ be used anywhere a template ID is accepted.</p>
 <tr><th>Argument or option</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>&lt;dockerfile&gt;</code></td><td>Required</td><td>Path to the Dockerfile.</td></tr>
+<tr><td><code>&lt;context&gt;</code></td><td>Required</td><td>Local context directory, as with <code>docker build</code>.</td></tr>
+<tr><td><code>-f, --file &lt;path&gt;</code></td><td><code>&lt;context&gt;/Dockerfile</code></td><td>Dockerfile path; explicit relative paths resolve from the current directory.</td></tr>
 <tr><td><code>--name &lt;name&gt;</code></td><td>Required</td><td>Assign the template name.</td></tr>
-<tr><td><code>--image &lt;ref&gt;</code></td><td>First concrete <code>FROM</code> image</td><td>Override the base image. If the Dockerfile has no usable <code>FROM</code>, <code>[image.resolver].default_image</code> from your config file is used. Alias: <code>--user-image</code>.</td></tr>
 <tr><td><code>--cpu &lt;count&gt;</code></td><td><code>[machine].vcpu_count</code> from your config file</td><td>Set the template’s vCPU count. Alias: <code>--cpu-count</code>.</td></tr>
 <tr><td><code>--memory &lt;MiB&gt;</code></td><td><code>[machine].mem_size_mib</code> from your config file</td><td>Set the template’s memory. Aliases: <code>--memory-mb</code>, <code>--mem</code>.</td></tr>
+<tr><td><code>--start-cmd &lt;command&gt;</code></td><td>Image <code>ENTRYPOINT</code>/<code>CMD</code></td><td>Override template startup; an empty string disables startup.</td></tr>
+<tr><td><code>--ready-cmd &lt;command&gt;</code></td><td>Image <code>HEALTHCHECK</code>, or the normal startup delay</td><td>Override the command that must succeed before snapshot capture.</td></tr>
+<tr><td><code>--build-arg KEY=VALUE</code></td><td>None</td><td>Build argument; repeatable.</td></tr>
+<tr><td><code>--secret &lt;spec&gt;</code></td><td>None</td><td>Native BuildKit secret mounts; repeatable.</td></tr>
+<tr><td><code>--no-cache</code></td><td>False</td><td>Rebuild without cached instructions. BuildKit also resets cache mounts used by those instructions.</td></tr>
+<tr><td><code>--buildctl &lt;path&gt;</code></td><td><code>aenv-buildctl</code> beside <code>aenv</code></td><td>Local client executable.</td></tr>
+<tr><td><code>--progress &lt;format&gt;</code></td><td><code>auto</code></td><td>Three-stage bar on terminals, plain logs when redirected. <code>plain</code> selects plain logs; <code>tty</code> selects BuildKit’s native display.</td></tr>
+<tr><td><code>--timeout &lt;seconds&gt;</code></td><td>3600</td><td>Builder preparation and Dockerfile build deadline; the CLI allows 10 additional minutes for publication.</td></tr>
 </tbody>
 </table>
 </div>
-<p><code>aenv build</code> and <code>aenv pull --detach</code> submit the build and return immediately. Watch it until it
-succeeds or fails by passing the template name or ID:</p>
+<p><code>COPY</code> and <code>ADD</code> resolve from the context directory, independently of the
+Dockerfile’s location. Local directories are supported; URL and stdin contexts
+are not supported. The final Dockerfile stage is always published. Select base
+images with <code>FROM</code> (or <code>ARG</code> used by <code>FROM</code>) and startup with <code>ENTRYPOINT</code>/<code>CMD</code>.
+<code>--start-cmd</code> and <code>--ready-cmd</code> override startup and readiness independently.
+There are no image, stage-selection, SSH, or builder-resource overrides in the
+build CLI.</p>
+<p>Managed builder settings belong to the server configuration:</p>
+<pre><code class="language-toml">[template_build]
+max_concurrent_builds = 4
+builder_image = "docker.io/moby/buildkit:v0.33.0"
+builder_cpu_count = 16
+builder_memory_mb = 32768
+cache_size_mb = 65536
+</code></pre>
+<p>Each node admits at most <code>max_concurrent_builds</code> managed builds, including
+preparation, image publication, and cleanup. Excess builder PUT requests return
+HTTP 429 without changing the waiting build; retry once capacity is available.
+Each build permits up to 8 simultaneous WebSocket tunnels, including pending
+connections and upgrades. Excess tunnel connections also return HTTP 429.</p>
+<p>The 64 GiB disk is the persistent <code>/var/lib/buildkit</code> data volume, where image
+layers, build contexts, and cache mounts live. Its capacity applies when creating
+the cache; changing the setting does not resize an existing volume. These
+resources are separate from the resulting template’s CPU and memory. Dockerfile
+build requests reject a cache capacity above <code>volume.max_size_mb</code>; a smaller
+volume limit does not prevent the server from starting or serving other APIs.</p>
+<p>BuildKit handles multi-stage builds, <code>COPY</code>, <code>ADD</code>, <code>.dockerignore</code>, cache mounts,
+and Dockerfile syntax. The CLI remains connected during the build, streams build
+progress, and exits nonzero on failure. The server provisions and releases an
+internal worker for each template build. The first Dockerfile build prepares a
+reusable builder snapshot in a private namespace of the configured snapshot
+repository. Nodes sharing that repository restore the same builder and attach a
+new cache volume before starting BuildKit. Concurrent first requests on a node
+share initialization. Simultaneous first builds on different nodes may both
+prepare a builder; subsequent builds reuse the published snapshot. Builder image,
+CPU, memory, virtualization mode, and readiness setup identify the reusable snapshot;
+changing those inputs prepares a new builder. The CLI uses
+only template and build IDs; workers are absent from public sandbox listings and endpoints. Cancellation
+and deadlines release the worker and discard its incomplete cache child. A hard client failure
+is covered by the build deadline, and server restart recovers unfinished builds
+and cache reservations from a durable journal. Failed cleanup is retained and
+retried every 30 seconds while the server runs, and cancellation retries use the
+same cleanup path. Active builds reject template deletion until cancellation or
+completion. An unreadable entry does not block recovery of other builds
+or prevent server startup. Once BuildKit succeeds, publication proceeds even if the
+CLI is interrupted; its status remains available:</p>
 <pre><code class="language-bash">aenv template watch my-template
 </code></pre>
 <p><code>aenv template watch</code> has no timeout option. Stop the
 local watch with <code>Ctrl-C</code>; the remote build continues.</p>
-<p>Supported Dockerfile instructions:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Instruction</th><th>Behavior</th></tr>
-</thead>
-<tbody>
-<tr><td><code>FROM</code></td><td>Base image (overridable with <code>--image</code>)</td></tr>
-<tr><td><code>RUN</code></td><td>Shell command executed inside the build sandbox</td></tr>
-<tr><td><code>ENV</code></td><td>Set an environment variable</td></tr>
-<tr><td><code>ARG</code></td><td>Set a build-time variable</td></tr>
-<tr><td><code>WORKDIR</code></td><td>Create the directory if needed and set it as the working directory</td></tr>
-<tr><td><code>USER</code></td><td>Set the default user (a missing named account is created at the end of the build)</td></tr>
-<tr><td><code>ENTRYPOINT</code></td><td>Becomes the template <code>startCmd</code></td></tr>
-<tr><td><code>CMD</code></td><td>Becomes <code>startCmd</code> if no <code>ENTRYPOINT</code> is present</td></tr>
-<tr><td><code>EXPOSE</code> / <code>VOLUME</code> / <code>LABEL</code></td><td>Accepted but stored as metadata only</td></tr>
-</tbody>
-</table>
-</div>
+<p>The node reads the completed image directly from the builder by SHA-256 digest.
+It verifies the transferred bytes and converts only missing layers, reusing the
+same content-addressed OverlayBD cache as registry image imports. The completed
+image never travels through the CLI. Only the final image configuration becomes
+template configuration; intermediate stages and build-time arguments are not
+template environment variables.</p>
+<p>Publishing also boots the image and runs its startup command. An image
+can compile and convert successfully but fail this step if its entrypoint needs
+devices absent from the guest. For example, <code>deploy/docker/Dockerfile.agentenv</code>
+starts the host AgentENV server, which requires <code>/dev/kvm</code>; it cannot run as a
+template in a guest without nested KVM support. Use <code>--start-cmd</code> to select another
+startup command, or <code>--start-cmd "" --ready-cmd true</code> to capture without starting
+the image’s application or running its health check.</p>
+<p>The guest image needs <code>/bin/sh</code> for envd process execution, including exec-form
+Dockerfile commands. Numeric <code>USER</code> values, including UIDs without an account
+and explicit UID/GID pairs, are preserved during startup and restore.</p>
+<p>Caches are shared across template names and nodes using the configured snapshot
+repository. Each build clones the latest immutable cache seed into its own
+writable volume. Sequential builds inherit the preceding build’s accumulated
+instruction cache and <code>RUN --mount=type=cache</code> data. Concurrent builds can fork
+the same seed without waiting for each other; the last successfully published
+cache becomes the next seed. Sibling cache additions are not merged.</p>
+<p>After image import, the node stops BuildKit, checkpoints and publishes its cache
+volume through the normal volume freeze and capture path, and stops the VM without
+saving its memory, rootfs, or device state. A failed shutdown or cache capture
+keeps the previous shared seed. Volume ownership remains held until the VM stops.</p>
+<p>Cache volumes use normal volume publication, uploading only missing layers.
+Cache publication adds cleanup time, but a failed cache upload does not fail an
+otherwise successful template build or replace the previous seed. Old cache
+volumes are removed after active children release their leases. The shared cache
+record commits the new seed and pending retirements together, and cleanup retries
+retirements independently of individual builds. BuildKit’s garbage collector
+manages cache contents. Cache sharing uses the repository’s existing API-key trust boundary.
+Registry credentials come from the local BuildKit session and normal Docker
+credential configuration.</p>
+<p>The BuildKit API extends the existing template/build lifecycle:</p>
+<ol>
+<li><code>POST /v3/templates</code> allocates template/build IDs using the existing request.</li>
+<li><code>PUT /templates/{templateID}/builds/{buildID}/builder</code> prepares the worker.
+It accepts optional <code>startCmd</code>, <code>readyCmd</code>, and <code>timeout</code>, and returns
+<code>imageName</code>. A build that has already started returns <code>409</code>.</li>
+<li>Poll <code>GET /templates/{templateID}/builds/{buildID}/status</code> until <code>building</code>;
+<code>waiting</code> means the worker is still preparing.</li>
+<li><code>GET /templates/{templateID}/builds/{buildID}/builder</code> opens the authenticated
+binary WebSocket for BuildKit. Use the returned name in
+<code>--output type=image,name=&lt;imageName&gt;,oci-mediatypes=true</code>.</li>
+<li>The server observes successful BuildKit completion, verifies the image digest,
+and automatically imports and publishes the template. No client submission
+request is needed. Continue polling status until <code>ready</code> or <code>error</code>.</li>
+<li><code>DELETE /templates/{templateID}/builds/{buildID}/builder</code> cancels the build
+before publication. Once publication starts, cancellation returns <code>409</code> and
+the server finishes publication and releases the worker.</li>
+</ol>
+<p>These endpoints require the API key. The gateway schedules worker preparation
+and binds subsequent requests to that node. Status polling falls back to the
+shared repository after the binding expires. The unique image name identifies
+this build among cached BuildKit history; a dropped connection is never treated
+as successful completion. Failed solves become <code>error</code>. Existing statuses are
+unchanged; <code>building</code> includes image import and publication.</p>
+<p>Image import has a one-hour deadline; metadata is limited to 4 MiB per blob and
+images to 1024 layers and 64 GiB of compressed data. Worker connections can drain
+for up to ten seconds after image import before the worker is stopped. Existing
+declarative template endpoints retain their behavior.</p>
+<p>By default, image <code>ENTRYPOINT</code> and <code>CMD</code> are combined for startup through <code>/bin/sh -c</code>.
+Dockerfile <code>HEALTHCHECK</code> supplies the readiness command before snapshot capture;
+shell checks honor Dockerfile <code>SHELL</code>, and <code>HEALTHCHECK NONE</code> disables the check.
+It uses AgentENV’s readiness polling and deadline, not Docker’s health-monitoring
+intervals or restart behavior. Without a check, startup uses the normal template
+readiness delay. <code>--start-cmd</code> and <code>--ready-cmd</code> (API fields <code>startCmd</code> and <code>readyCmd</code>)
+override these commands independently without modifying the image configuration.
+Images must satisfy AgentENV’s normal guest runtime requirements;
+<code>EXPOSE</code> and <code>VOLUME</code> are metadata, not Docker runtime services.</p>
+<h3 id="api-and-repository-compatibility"><a class="header" href="#api-and-repository-compatibility">API and repository compatibility</a></h3>
+<p>Existing template creation, declarative build, status, listing, and deletion
+endpoints remain available. BuildKit adds <code>PUT</code>, <code>GET</code>, and <code>DELETE</code> on the
+<code>builder</code> resource beneath an existing build. It adds no competing template
+creation endpoint or image submission endpoint. Upgrade the gateway and all
+nodes serving build requests before using BuildKit.</p>
+<p>Existing remote snapshots and volumes need no migration. Their catalog keys,
+artifact paths, and layer formats are unchanged. Builder snapshots use the
+separate <code>template-build/builder</code> namespace; the new cache head and retirement
+record uses <code>template-build/cache-head.json</code>. Cache volumes retain the normal
+volume format.</p>
+<p>Startup metadata adds an optional <code>shell</code> field. Older records omit it, retain
+<code>/bin/bash -lc</code> behavior, and are written back without adding the field. New
+BuildKit templates use <code>/bin/sh -c</code>. Older servers can deserialize these records,
+but ignore the shell field and drop it when rewriting the record. Building a
+derived template on an older server therefore uses Bash and can fail for images
+without Bash or change shell behavior. Keep builds derived from BuildKit templates
+on upgraded nodes; rolling back does not provide full BuildKit template support.</p>
 <h3 id="runtime-configuration"><a class="header" href="#runtime-configuration">Runtime Configuration</a></h3>
 <p>Both methods read the same set of OCI image config fields. For <code>aenv pull</code>, these come from the image config or flags; for <code>aenv build</code>, they are set by the
 corresponding Dockerfile instructions executed during the build. The following fields from the <a href="https://github.com/opencontainers/image-spec/blob/main/config.md">OCI image-spec config object</a> are recognised:</p>
@@ -2590,6 +2760,15 @@ feature on <code>POST /sandboxes-cold</code> is more extensively tested. See the
 A volume has a stable ID, a unique name, a fixed size, and an access mode. You
 can mount it at an absolute guest path when creating a sandbox, then reuse its
 contents after that sandbox is deleted.</p>
+<p>Deleting a running sandbox freezes its writable volume filesystems, seals and
+publishes their layers, and stops the VM without saving memory or rootfs state.
+This checkpoints the filesystem journal so the next mount avoids journal replay.
+Recoverable capture or publication failures thaw the filesystems and retain the
+running sandbox and its volume reservations. A terminal capture failure stops the
+VM and marks writable volumes <code>failed</code>, preventing mounts of incomplete data.
+Stop or catalog failures retain the deletion state for retry; reservations are
+released only after stop succeeds. Pausing still saves the full sandbox state
+for later resume.</p>
 <p>The default volume size is 65536 MiB (64 GiB). By default, one sandbox may
 mount up to four volumes and each volume may be at most 262144 MiB (256 GiB).
 Administrators can change these limits in the <a href="#volume"><code>[volume]</code> configuration</a>.</p>
@@ -2741,9 +2920,12 @@ export AENV_API_KEY=&lt;api-key&gt;
   -H "Content-Type: application/json" \
   -d '{
     "templateID": "ubuntu",
-    "volumeMounts": {
-      "/workspace/data": "job-42-data"
-    }
+    "volumeMounts": [
+      {
+        "name": "job-42-data",
+        "path": "/workspace/data"
+      }
+    ]
   }'
 </code></pre>
 <p>List and inspect volumes:</p>
@@ -3030,6 +3212,30 @@ await Sandbox.Pause(sandbox.sandboxId, {
 await sandbox.kill();
 </code></pre>
 <p>Replace <code>&lt;template-id&gt;</code> with a template that exists in your local template store. Use <code>e2b template list</code> or <code>GET /v2/templates</code> to see available templates.</p>
+<h3 id="volume-mounts"><a class="header" href="#volume-mounts">Volume mounts</a></h3>
+<p>The TypeScript SDK can create a volume and pass it directly when creating a
+sandbox:</p>
+<pre><code class="language-typescript">import { Sandbox, Volume } from "e2b";
+
+const volume = await Volume.create("workspace-volume", {
+  apiKey: process.env.E2B_API_KEY,
+});
+const sandbox = await Sandbox.create("&lt;template-id&gt;", {
+  apiKey: process.env.E2B_API_KEY,
+  volumeMounts: {
+    "/workspace": volume,
+  },
+});
+</code></pre>
+<p>For the Python SDK, create the volume with <code>aenv volume create</code> or
+<code>POST /volumes</code>, then pass its name when creating a sandbox:</p>
+<pre><code class="language-python">sandbox = Sandbox.create(
+    "&lt;template-id&gt;",
+    volume_mounts={"/workspace": "workspace-volume"},
+)
+</code></pre>
+<p>AgentENV supports the TypeScript SDK’s volume create, list, and delete operations, and accessing the mounted filesystem through the sandbox.
+The E2B SDK’s direct volume content API is not supported.</p>
 <h3 id="python-sdk"><a class="header" href="#python-sdk">Python SDK</a></h3>
 <h4 id="setup-1-1"><a class="header" href="#setup-1-1">Setup</a></h4>
 <p>Install the SDK:</p>
@@ -3170,8 +3376,8 @@ local path overrides, not the default dependency catalog.</p>
 <tr><td><code>socket_timeout_secs</code></td><td>integer</td><td><code>3</code></td><td>Max seconds to wait for the Firecracker API socket</td></tr>
 <tr><td><code>socket_poll_ms</code></td><td>integer</td><td><code>1</code></td><td>Poll interval (ms) for checking socket availability</td></tr>
 <tr><td><code>work_dir</code></td><td>string</td><td><code>"$AENV_HOME/firecracker-work"</code></td><td>Parent directory for per-sandbox Firecracker work directories. These dirs contain runtime sockets, symlinks, local logs, and writable OverlayBD upper layer data such as <code>overlaybd/upper.data</code> and <code>overlaybd/upper.index</code></td></tr>
-<tr><td><code>serial_dir</code></td><td>string</td><td><code>"$AENV_HOME/logs/serial"</code></td><td>Directory for persistent Firecracker serial output (per-sandbox subdirectories)</td></tr>
-<tr><td><code>log_level</code></td><td>string</td><td>unset (disabled)</td><td>Optional Firecracker log level (<code>Error</code>, <code>Warning</code>, <code>Info</code>, <code>Debug</code>, <code>Trace</code>, case-insensitive). When set to a non-empty value, Firecracker’s own logging is enabled and written to a <code>firecracker.log</code> file in each sandbox’s log directory (alongside the serial output). Empty/unset disables it</td></tr>
+<tr><td><code>serial_dir</code></td><td>string</td><td><code>"$AENV_HOME/logs/serial"</code></td><td>Directory for persistent Firecracker logs when enabled (per-sandbox subdirectories). Setting this path alone does not enable logging</td></tr>
+<tr><td><code>log_level</code></td><td>string</td><td>unset (disabled)</td><td>Optional Firecracker log level (<code>Error</code>, <code>Warning</code>, <code>Info</code>, <code>Debug</code>, <code>Trace</code>, case-insensitive). A non-empty value enables <code>firecracker.log</code> and stdout/stderr capture in each sandbox’s log directory. Empty/unset discards stdout/stderr and creates no log files or per-sandbox log directories. Explicit Rust stdout/stderr destinations still enable the requested stream</td></tr>
 </tbody>
 </table>
 </div>
@@ -3625,6 +3831,31 @@ snapshot publication/runtime resolution as an optional acceleration path.</p>
 </tbody>
 </table>
 </div>
+<h2 id="snapshotpublish_compression"><a class="header" href="#snapshotpublish_compression"><code>[snapshot.publish_compression]</code></a></h2>
+<p>Publish-time compression for snapshot layers uploaded to OSS/ACR. Local layers
+always stay raw, so local resume pays no decompression cost; enabled by default,
+memory layers and incremental read-write layers are compressed once as they
+are uploaded, cutting network bytes for cross-node resume. This is the only
+compression switch; the legacy capture-time knobs under <code>[memory_snapshot]</code>
+and <code>[template_build]</code> were removed from the configuration schema.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>Compress memory layers and incremental read-write layers when uploading them to OSS/ACR.</td></tr>
+<tr><td><code>algorithm</code></td><td>string</td><td><code>"lz4"</code></td><td>Compression algorithm. Valid values are only <code>lz4</code> and <code>zstd</code>.</td></tr>
+<tr><td><code>workers</code></td><td>integer</td><td><code>1</code></td><td>Number of blocking threads used to compress 4 KiB blocks within a layer. <code>1</code> is sequential; higher values run in parallel without changing the output layout. Clamped to 64.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Known impact: compressed layers are recorded without a layer uuid (ZFile
+layers carry no LSMT uuid), so P2P uuid-keyed acceleration does not apply to
+them. Snapshot P2P publication also skips digest-keyed advertisements for
+local raw layers whose digest is absent from the committed record — the
+record names the compressed bytes, so the raw digest key would never be
+looked up by consumers.</p>
 <h2 id="backendposix_fs"><a class="header" href="#backendposix_fs"><code>[backend.posix_fs]</code></a></h2>
 <p>POSIX filesystem-backed snapshot repository configuration. This section is used when <code>snapshot.repository_backend = "posix_fs"</code>.</p>
 <div class="table-wrapper">
@@ -3761,8 +3992,6 @@ the default path on every startup.</p>
 <tbody>
 <tr><td><code>overlaybd_global_config_path</code></td><td>string</td><td><code>"$AENV_HOME/overlaybd/mem-overlaybd-global.json"</code></td><td>Path to the overlaybd global config used for the memory-snapshot ublk backend. Regenerated at startup (manual edits are overwritten); change only to relocate the generated file.</td></tr>
 <tr><td><code>track_dirty_pages</code></td><td>bool</td><td><code>true</code></td><td>Enable Firecracker KVM dirty-page tracking for memory snapshots. PVM automatically disables it because this combination has not been tested. Memory snapshot packaging always uses the direct OverlayBD path. Set <code>AGENTENV_MEMORY_SNAPSHOT_TRACK_DIRTY_PAGES=false</code> to disable it.</td></tr>
-<tr><td><code>compression_enabled</code></td><td>bool</td><td><code>false</code></td><td>Enable compression for memory snapshot layers. When disabled, <code>compression_algorithm</code> is still parsed but has no effect. This setting affects only memory layers; the physical file name remains <code>overlaybd.commit</code>.</td></tr>
-<tr><td><code>compression_algorithm</code></td><td>string</td><td><code>"lz4"</code></td><td>Compression algorithm for memory snapshot layers. Valid values are only <code>lz4</code> and <code>zstd</code>.</td></tr>
 </tbody>
 </table>
 </div>
@@ -3810,20 +4039,23 @@ and are then re-fetched on demand.</p>
 </table>
 </div>
 <h2 id="template_build"><a class="header" href="#template_build"><code>[template_build]</code></a></h2>
-<p>Compression settings applied when a template build captures its snapshot.
-This section is fully independent of <code>[memory_snapshot].compression_enabled</code>:
-template builds consult only these keys, for both memory layers and the
-sealed rootfs read-write layer. Pause/snapshot captures of running sandboxes
-are not affected, and rootfs seals stay raw there.</p>
+<p>Managed Dockerfile builder resources. The first Dockerfile
+build on a node prepares a reusable internal builder template. Each build mounts
+a separate clone of the repository’s shared cache seed; concurrent builds do not
+queue for cache ownership. The last successfully published cache becomes the next
+seed, with best-effort reuse of concurrent branches.
+Builder resources do not change the resulting template’s CPU or memory.</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>compression_enabled</code></td><td>bool</td><td><code>false</code></td><td>Enable compression for snapshot artifacts captured by template builds. When enabled, both the memory layers and the sealed rootfs read-write layer are written as ZFile-compressed layers.</td></tr>
-<tr><td><code>compression_algorithm</code></td><td>string</td><td><code>"lz4"</code></td><td>Compression algorithm. Valid values are only <code>lz4</code> and <code>zstd</code>. Parsed but ignored when compression is disabled.</td></tr>
-<tr><td><code>compression_workers</code></td><td>integer</td><td><code>1</code></td><td>Number of blocking threads used to compress 4 KiB blocks within a layer. <code>1</code> is sequential; higher values run in parallel without changing the output layout. Clamped to 64.</td></tr>
+<tr><td><code>max_concurrent_builds</code></td><td>integer</td><td><code>4</code></td><td>Per-node limit for managed builds, including preparation, publication, and cleanup. Must be greater than zero. Excess builder PUT requests return HTTP 429 and leave the build waiting for retry.</td></tr>
+<tr><td><code>builder_image</code></td><td>string</td><td><code>"docker.io/moby/buildkit:v0.33.0"</code></td><td>Image containing the managed BuildKit daemon, client, and OCI runtime.</td></tr>
+<tr><td><code>builder_cpu_count</code></td><td>integer</td><td><code>16</code></td><td>Builder vCPUs, from 1 to 255.</td></tr>
+<tr><td><code>builder_memory_mb</code></td><td>integer</td><td><code>32768</code></td><td>Builder memory in MiB, from 256 to 2147483647.</td></tr>
+<tr><td><code>cache_size_mb</code></td><td>integer</td><td><code>65536</code></td><td>Capacity in MiB for new persistent BuildKit data disks. At least 1024 and at most <code>volume.max_size_mb</code>; changing it does not resize existing caches.</td></tr>
 </tbody>
 </table>
 </div>
@@ -4417,9 +4649,9 @@ POSTROUTING -s &lt;host_interaction_cidr&gt; -j MASQUERADE
 <li><code>boot_args</code>: kernel boot args (e.g. <code>console=ttyS0 ... init=/init</code>).</li>
 <li><code>vcpu_count</code>, <code>mem_size_mib</code>: VM size.</li>
 <li><code>runtime_policy</code>: socket/envd timeouts and poll intervals.</li>
-<li><code>firecracker_stdout_path</code>, <code>firecracker_stderr_path</code>: capture FC logs.
-If unset, logs default to <code>work_dir/logs/firecracker-stdout.log</code> and
-<code>work_dir/logs/firecracker-stderr.log</code>.</li>
+<li><code>common.stdout_path</code>, <code>common.stderr_path</code>: explicit capture directories.
+Otherwise stdout/stderr capture is enabled only when <code>common.firecracker_log_level</code>
+is non-empty, using the serial directory or <code>work_dir/logs</code> fallback.</li>
 <li><code>envd_version</code>: expected envd version for the guest image.</li>
 <li><code>env_vars</code>: optional default environment variables injected after envd init.</li>
 <li><code>ublk_config</code>: optional ublk-backed rootfs configuration.</li>
@@ -4609,7 +4841,9 @@ snapshot-backed template launches, this means recreating runtime image configs a
 writable uppers from the committed layer stack.</li>
 <li>Rootfs copies use copy-on-write helpers where available.</li>
 <li>Firecracker runs with <code>current_dir = work_dir</code>, so relative paths work.</li>
-<li>Firecracker logs default to <code>work_dir/logs/*</code> unless explicit log paths are configured.</li>
+<li>Firecracker logging is disabled by default. Set <code>firecracker.log_level</code> to enable
+stdout/stderr capture and <code>firecracker.log</code> under the configured serial directory.
+Direct Rust callers can also opt individual streams in using explicit destinations.</li>
 <li><code>start()</code> waits for both the API socket and envd readiness.</li>
 <li>Although the Firecracker process will be killed on drop, explicit <code>stop()</code> is recommended.</li>
 </ul>
@@ -4660,7 +4894,7 @@ socket_poll_ms = 20
 # work_dir = "/path/to/firecracker-work"
 # Optional override; defaults to $AENV_HOME/logs/serial.
 # serial_dir = "/path/to/serial"
-# Optional; enables Firecracker's own logging when set to a non-empty level.
+# Optional; enables stdout/stderr capture and firecracker.log when non-empty.
 # log_level = "Info"
 
 [kernel]
@@ -4708,13 +4942,14 @@ directories. These directories include runtime sockets, symlinks, local
 logs, and writable OverlayBD upper layer data (<code>overlaybd/upper.data</code> and
 <code>overlaybd/upper.index</code>). Defaults to <code>$AENV_HOME/firecracker-work</code>.</li>
 <li><code>serial_dir</code>: Optional override for the persistent output directory.
-Serial output is written under a per-sandbox subdirectory and not removed
-by the sandbox. Defaults to <code>$AENV_HOME/logs/serial</code>.</li>
+When logging is enabled, serial output is written under a per-sandbox subdirectory
+and not removed by the sandbox. Defaults to <code>$AENV_HOME/logs/serial</code>.
+Setting this path alone does not enable logging.</li>
 <li><code>log_level</code>: Optional Firecracker log level (<code>Error</code>, <code>Warning</code>, <code>Info</code>,
 <code>Debug</code>, <code>Trace</code>, case-insensitive). When set to a non-empty value,
-Firecracker’s own logging is enabled and written to a <code>firecracker.log</code>
-file in the sandbox’s log directory (the same directory used for serial
-output). If omitted or empty, Firecracker logging is disabled.</li>
+stdout/stderr capture and <code>firecracker.log</code> are enabled in the sandbox’s
+log directory. If omitted or empty, stdout/stderr are discarded and no log
+directories are created, unless explicit Rust capture destinations are set.</li>
 </ul>
 </li>
 <li>
@@ -5482,7 +5717,7 @@ network namespaces are missing</li>
 <tr><td>Inherited runtime layers</td><td>snapshot artifact dir <code>rootfs/inherited-layers/{index}/{source-file}</code></td><td>Snapshot-owned hard links or copies of inherited runtime-created lower suffixes</td><td>Removes dependence on previous managed snapshot or persisted sandbox artifact roots</td><td>Created during pause when inherited lowers come from the managed snapshot root or another sandbox/generation under the same persisted <code>artifacts</code> root.</td><td>No.</td></tr>
 <tr><td>Attached-drive snapshot dirs</td><td>snapshot artifact dir <code>drives/{drive_id}/...</code></td><td>Per-drive image config and snapshot layer</td><td>Captures writable attached-drive state</td><td>Created alongside rootfs snapshot for each drive.</td><td>No.</td></tr>
 <tr><td>Firecracker work dir</td><td>configured work root, or consumed pool tempfile dir</td><td>API socket, symlinks, runtime dirs, local logs</td><td>Firecracker CWD for a sandbox</td><td>Created when sandbox handle is built, or moved from a warm pool entry; removed by owning <code>TempDir</code>.</td><td>Yes, except live state.</td></tr>
-<tr><td>Firecracker serial logs</td><td><code>firecracker.serial_dir/{sandbox_id}/*</code>, or warm pool work dir logs</td><td>Firecracker stdout/stderr</td><td>Debugging</td><td>Opened on spawn and appended. Warm logs are relocated when a warm process is consumed. Configured serial output is not automatically GC’d.</td><td>No, but disposable.</td></tr>
+<tr><td>Firecracker serial logs</td><td><code>firecracker.serial_dir/{sandbox_id}/*</code>, or warm pool work dir logs</td><td>Firecracker stdout/stderr</td><td>Debugging</td><td>Opened on spawn and appended only when <code>firecracker.log_level</code> is non-empty or an explicit Rust capture destination is set. Enabled warm logs are relocated when a warm process is consumed. Configured serial output is not automatically GC’d.</td><td>No, but disposable.</td></tr>
 <tr><td>Firecracker logger output</td><td><code>firecracker.log</code> in the same per-sandbox log directory as the serial logs</td><td>Firecracker internal logger (<code>PUT /logger</code>)</td><td>Debugging</td><td>Only created when <code>firecracker.log_level</code> is set to a non-empty level. Written by Firecracker itself; not automatically GC’d.</td><td>No, but disposable.</td></tr>
 </tbody>
 </table>
@@ -5496,7 +5731,7 @@ network namespaces are missing</li>
 </thead>
 <tbody>
 <tr><td>Warm pool work dir</td><td>system tempfile dir</td><td>Firecracker socket and warm process logs</td><td>Pre-spawned Firecracker process CWD</td><td>Created by pool maintenance as a <code>TempDir</code>. Removed when warm entry is cleaned up, or moved into the consuming sandbox and later dropped there.</td></tr>
-<tr><td>Warm pool logs</td><td>warm pool work dir <code>firecracker-stdout.log</code>, <code>firecracker-stderr.log</code></td><td>Firecracker output before the warm process is consumed</td><td>Debugging warm startup</td><td>Created on warm spawn. Relocated into sandbox log path when consumed if no explicit stdout/stderr override.</td></tr>
+<tr><td>Warm pool logs</td><td>warm pool work dir <code>firecracker-stdout.log</code>, <code>firecracker-stderr.log</code></td><td>Firecracker output before the warm process is consumed</td><td>Debugging warm startup</td><td>Created on warm spawn only when <code>firecracker.log_level</code> is non-empty. Relocated into sandbox log path when consumed if no explicit stdout/stderr override.</td></tr>
 </tbody>
 </table>
 </div>
@@ -6125,6 +6360,7 @@ pub trait P2pTransport: Send + Sync {
 </li>
 <li>Overlaybd layers referenced by the snapshot’s rootfs, memory, and attached-drive image configs. These are not published under a snapshot-specific key. They reuse the overlaybd layer artifact protocol owned by <code>src/overlaybd/p2p/artifact.rs</code>, with keys like <code>overlaybd-layer/v1/sha256:&lt;digest&gt;</code> and <code>LayerMetadata</code> understood by the overlaybd HTTP facade.</li>
 </ul>
+<p>Digest-keyed layer publication is guarded against the committed record: a local layer is only advertised under <code>overlaybd-layer/v1/sha256:&lt;digest&gt;</code> when that digest is one the committed record references for the same subject (memory, rootfs, or the matching attached drive). When <code>[snapshot.publish_compression]</code> recontainerizes a raw local layer as ZFile during upload, the record names the compressed bytes, so the raw layer’s digest key is skipped rather than advertised under a key no consumer will look up. ZFile layers also carry no LSMT uuid (<code>uuid = None</code> in the committed record), so uuid-keyed acceleration never applies to recontainerized layers.</p>
 <p>That split is important. Snapshot fixed artifacts are scoped to one snapshot ID and are only consumed by snapshot runtime resolvers. Overlaybd commit layers are content-addressed and may be consumed by any overlaybd runtime path, including foreground range reads through <code>/p2p-http/{origin}</code>. Do not add a second snapshot-specific key format for overlaybd layers; doing so publishes bytes that overlaybd cannot discover.</p>
 <p>OSS snapshot resolution consumes fixed artifacts through P2P first:</p>
 <ul>
